@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Трекер</title>
+<!--
+  Трекер WB_7 – оболочка страницы. Данных и секретов здесь нет.
+  Адрес веб-приложения и токен приходят в части ссылки после «#» (кнопка бота),
+  разметку вкладок отдаёт Apps Script WB_7 (doGet ?format=json), ответы уходят в doPost (tracker_submit).
+  Telegram Web App API: https://core.telegram.org/bots/webapps (сверено 16.11.2026).
+-->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  body{margin:0;font:15px/1.45 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:#eef1f5;color:#15202c}
+  @media (prefers-color-scheme:dark){body{background:#0f151c;color:#e4ebf2}}
+  #state{padding:32px 16px;text-align:center;color:#5d6b7a}
+  @media (prefers-color-scheme:dark){#state{color:#93a3b4}}
+  #state button{margin-top:12px;font-weight:600;font-size:14px;padding:8px 14px;border-radius:8px;border:1px solid #d6dde5;background:transparent;color:inherit;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="state">Загружаю…</div>
+<div id="app" hidden></div>
+<script>
+(function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+  // Параметры из «#» и, на всякий случай, из «?»; Telegram может дописать к «#» свои через «&».
+  function params() {
+    var out = {}, parts = (location.hash.slice(1) + '&' + location.search.slice(1)).split('&');
+    parts.forEach(function (p) {
+      var i = p.indexOf('='); if (i < 1) return;
+      var k = p.slice(0, i), v = p.slice(i + 1);
+      try { v = decodeURIComponent(v); } catch (e) {}
+      if (!(k in out)) out[k] = v;
+    });
+    return out;
+  }
+  var P = params();
+  var API = P.u || '', T = P.t || '';
+  var state = document.getElementById('state'), app = document.getElementById('app');
+
+  function fail(text) {
+    state.hidden = false; app.hidden = true;
+    state.textContent = text;
+    var b = document.createElement('button'); b.textContent = 'Повторить'; b.onclick = load;
+    state.appendChild(document.createElement('br')); state.appendChild(b);
+  }
+
+  if (!/^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(API) || !/^[0-9a-f]{64}$/.test(T)) {
+    state.textContent = 'Ссылка недействительна. Откройте Трекер кнопкой в боте.';
+    return;
+  }
+
+  function load() {
+    state.hidden = false; state.textContent = 'Загружаю…';
+    var q = '?format=json&t=' + T + (P.q ? '&q=' + encodeURIComponent(P.q) : '') + (P.d ? '&d=' + encodeURIComponent(P.d) : '');
+    fetch(API + q, { credentials: 'omit', cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) { state.textContent = r.message || 'Не удалось открыть Трекер.'; return; }
+        app.innerHTML = r.html; app.hidden = false; state.hidden = true;
+        wire(r.focus || 0, r.decision || '');
+      })
+      .catch(function () { fail('Нет связи с таблицей. Проверьте интернет.'); });
+  }
+
+  function submit(jid, d, text) {
+    return fetch(API, {
+      method: 'POST', credentials: 'omit',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },   // простой запрос, без предварительной проверки CORS
+      body: JSON.stringify({ action: 'tracker_submit', t: T, jid: jid, d: d, text: text })
+    }).then(function (r) { return r.json(); });
+  }
+
+  function wire(F, D) {
+    var tabs = app.querySelectorAll('.tabs button');
+    function show(n) {
+      tabs.forEach(function (b) { b.setAttribute('aria-selected', b.dataset.tab === n ? 'true' : 'false'); });
+      app.querySelectorAll('.pane').forEach(function (p) { p.hidden = p.dataset.pane !== n; });
+    }
+    tabs.forEach(function (b) { b.onclick = function () { show(b.dataset.tab); }; });
+    function open(card, d, l) {
+      var f = card.querySelector('.form'); f.hidden = false; f.dataset.d = d;
+      f.querySelector('.send').textContent = d === 'reply' ? 'Отправить ответ' : 'Отправить: ' + l;
+      var ta = f.querySelector('textarea');
+      ta.placeholder = d === 'reply' ? 'Коротко: что сделать' : 'Комментарий, если нужен'; ta.focus();
+    }
+    app.querySelectorAll('.ask').forEach(function (card) {
+      card.querySelectorAll('.acts .btn[data-d]').forEach(function (b) { b.onclick = function () { open(card, b.dataset.d, b.dataset.l); }; });
+      card.querySelector('.cancel').onclick = function () { card.querySelector('.form').hidden = true; };
+      card.querySelector('.send').onclick = function () {
+        var f = card.querySelector('.form'), btn = this, note = card.querySelector('.note');
+        btn.disabled = true; note.hidden = false; note.className = 'note'; note.textContent = 'Отправляю…';
+        submit(Number(card.dataset.id), f.dataset.d, f.querySelector('textarea').value).then(function (r) {
+          note.textContent = r.message || (r.ok ? 'Принято.' : 'Ошибка.');
+          if (r.ok) { f.hidden = true; card.querySelectorAll('.acts').forEach(function (a) { a.hidden = true; }); }
+          else { note.className = 'note err'; btn.disabled = false; }
+        }).catch(function () { note.className = 'note err'; note.textContent = 'Нет связи, ответ не отправлен.'; btn.disabled = false; });
+      };
+    });
+    app.querySelectorAll('.btn.go').forEach(function (b) {
+      b.onclick = function () {
+        show('ask'); var c = document.getElementById('q' + b.dataset.q);
+        if (c) { app.querySelectorAll('.ask.focus').forEach(function (x) { x.classList.remove('focus'); }); c.classList.add('focus'); c.scrollIntoView(); }
+      };
+    });
+    if (F) {
+      var c = document.getElementById('q' + F);
+      if (c) { c.scrollIntoView(); var b = D && c.querySelector('.btn[data-d="' + D + '"]'); if (b) b.click(); }
+    }
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>
